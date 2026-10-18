@@ -1,5 +1,7 @@
 # pi-async-bash
 
+[![CI](https://github.com/chthub/pi-async-bash/actions/workflows/ci.yml/badge.svg)](https://github.com/chthub/pi-async-bash/actions/workflows/ci.yml)
+
 A thin background-job wrapper around **Pi's own bash tool**. Tested with Pi 1.3.0 and Node.js 22.19+.
 
 Pi runs the command. This extension only decides when to stop waiting and how to report its eventual result.
@@ -33,6 +35,8 @@ To enable codemode as well:
 ```sh
 pi --no-extensions -e ./src/index.ts -e builtin:codemode --tools +codemode
 ```
+
+**npm name warning:** the unscoped npm package `pi-async-bash` belongs to an unrelated publisher. This repository has not yet published an npm package. Use the GitHub install below, not `pi install npm:pi-async-bash`.
 
 To install from GitHub after removing/disabling the old bash override:
 
@@ -118,6 +122,10 @@ npm run test:integration
 ```
 
 Only documented/public Pi APIs are imported. Host libraries are peer dependencies; development pins Pi 1.3.0 for reproducible compatibility tests. Tests use temporary fixtures and do not require real model credentials.
+
+## CI and publishing
+
+GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. It remains disabled until an owned npm package name and npm-side trust are configured. See [publishing setup](docs/publishing.md).
 
 ## License
 
