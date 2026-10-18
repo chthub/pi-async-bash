@@ -82,6 +82,22 @@ export default function scriptedProvider(pi) {
     auth: { apiKey: { name: "No credentials", resolve: async () => ({ auth: {} }) } },
     getModels: () => [model], stream, streamSimple: stream,
   });
+  if (plan.completionTransform) {
+    if (!["drop-details", "replace-custom-type"].includes(plan.completionTransform)) {
+      throw new Error(`Unknown completion transformer: ${plan.completionTransform}`);
+    }
+    // This fixture loads before async-bash. The public message_end contract lets
+    // earlier handlers replace any metadata as long as the role stays unchanged.
+    pi.on("message_end", (event) => {
+      if (event.message.role !== "custom" || event.message.customType !== "async_bash_result") return;
+      return { message: {
+        ...event.message,
+        ...(plan.completionTransform === "drop-details"
+          ? { details: undefined }
+          : { customType: "fixture_transformed_result" }),
+      } };
+    });
+  }
   if (plan.dynamicTool) {
     let registered = false;
     pi.on("tool_result", (event) => {

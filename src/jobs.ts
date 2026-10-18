@@ -13,7 +13,7 @@ export type Job = {
   state: "running" | "cancelling" | "completed" | "failed" | "cancelled";
   background: boolean;
   acknowledged: boolean;
-  notified: boolean;
+  delivery: "pending" | "scheduled" | "queued" | "consumed" | "delivered";
   controller: AbortController;
   snapshot: NativeResult;
   exitCode?: number;
@@ -52,7 +52,7 @@ export class JobPool {
       state: "running",
       background: options.background,
       acknowledged: false,
-      notified: false,
+      delivery: "pending",
       controller: new AbortController(),
       snapshot: { content: [], details: undefined },
     };
@@ -126,12 +126,49 @@ export class JobPool {
   }
 
   private deliver(job: Job, generation: number): void {
-    if (!job.background || !job.acknowledged || !job.endedAt || job.notified) return;
-    job.notified = true;
+    if (!job.background || !job.acknowledged || !job.endedAt || job.delivery !== "pending") return;
+    job.delivery = "scheduled";
     // Let the acknowledgement handler return before scheduling the steer.
     setImmediate(() => {
-      if (!this.closed && generation === this.generation) this.notify(job);
+      if (!this.closed && generation === this.generation) this.enqueue(job);
     });
+  }
+
+  private enqueue(job: Job): void {
+    job.delivery = "queued";
+    try {
+      this.notify(job);
+    } catch {
+      // A failed enqueue is not delivery. Keep the result for a later boundary.
+      job.delivery = "pending";
+    }
+  }
+
+  /** Pi has started consuming the message. message_end may replace its metadata,
+   * so remember the original ID now and never resend a consumed notification.
+   */
+  observeDelivery(id: string): void {
+    const job = this.jobs.get(id);
+    if (!job?.background || !job.endedAt || job.delivery === "delivered") return;
+    job.delivery = "consumed";
+  }
+
+  /** Observe the public turn boundary, after earlier steering has been consumed.
+   * Clear-queue/Escape can discard a queued custom message. Do not wake an aborted
+   * run to recover it; retry at the next successful turn's normal tool boundary.
+   */
+  reconcileNotifications(pendingIds: ReadonlySet<string>, retry: boolean): void {
+    if (this.closed) return;
+    for (const job of this.jobs.values()) {
+      // Pi awaits custom start/end before the request and this turn boundary.
+      // This also confirms consumed messages on aborted/error turns, without
+      // depending on message_end metadata or pairing possibly interleaved events.
+      if (job.delivery === "consumed") job.delivery = "delivered";
+      if (!job.background || !job.acknowledged || !job.endedAt || job.delivery === "delivered") continue;
+      if (job.delivery === "queued" && !pendingIds.has(job.id)) job.delivery = "pending";
+      if (retry && job.delivery === "pending" && !pendingIds.has(job.id)) this.enqueue(job);
+    }
+    this.prune();
   }
 
   get(id: string): Job {
@@ -154,7 +191,7 @@ export class JobPool {
   }
 
   private prune(): void {
-    const completed = this.list().filter((job) => job.endedAt && job.notified);
+    const completed = this.list().filter((job) => job.endedAt && job.delivery === "delivered");
     for (const job of completed.slice(20)) this.jobs.delete(job.id);
   }
 

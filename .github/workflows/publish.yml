@@ -6,7 +6,7 @@ on:
   workflow_dispatch:
     inputs:
       tag:
-        description: 'Existing stable release tag, for example v0.1.0'
+        description: 'Tag of an existing published, non-prerelease GitHub release, for example v0.1.0'
         required: true
         type: string
 
@@ -31,6 +31,33 @@ jobs:
       RELEASE_TAG: ${{ github.event.release.tag_name || inputs.tag }}
       EXPECTED_NPM_PACKAGE: ${{ vars.NPM_PACKAGE_NAME }}
     steps:
+      # Keep this gate before checkout: retrying an older tag must not run only
+      # that tag's older validation script and bypass GitHub release metadata.
+      - name: Require a published stable GitHub release
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+          RELEASE_METADATA_PATH: ${{ runner.temp }}/npm-release.json
+        run: |
+          [[ "$RELEASE_TAG" =~ ^v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]
+          case "$GITHUB_EVENT_NAME" in
+            release)
+              jq -e --arg tag "$RELEASE_TAG" '
+                .action == "published" and .release.tag_name == $tag and
+                .release.draft == false and .release.prerelease == false and
+                (.release.published_at | type == "string" and length > 0)
+              ' "$GITHUB_EVENT_PATH" > /dev/null
+              ;;
+            workflow_dispatch)
+              jq -e --arg tag "$RELEASE_TAG" '.inputs.tag == $tag' "$GITHUB_EVENT_PATH" > /dev/null
+              ;;
+            *) exit 1 ;;
+          esac
+          gh api --method GET "repos/$GH_REPO/releases/tags/$RELEASE_TAG" > "$RELEASE_METADATA_PATH"
+          jq -e --arg tag "$RELEASE_TAG" '
+            .tag_name == $tag and .draft == false and .prerelease == false and
+            (.published_at | type == "string" and length > 0)
+          ' "$RELEASE_METADATA_PATH" > /dev/null
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           ref: ${{ github.event.release.tag_name || inputs.tag }}
@@ -42,6 +69,8 @@ jobs:
           registry-url: 'https://registry.npmjs.org'
           package-manager-cache: false
       - name: Require an owned package name and matching stable tag
+        env:
+          RELEASE_METADATA_PATH: ${{ runner.temp }}/npm-release.json
         run: node scripts/check-release.mjs
       - name: Require the release commit to be on main
         run: |

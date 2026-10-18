@@ -97,7 +97,7 @@ Status returns the latest **native bounded output snapshot**, state, and optiona
 
 Cancellation requests the native AbortController path. It first reports `cancelling`; the job's final notification establishes its terminal state. On Unix, Pi's current implementation terminates the process group with SIGKILL; this is not a graceful SIGTERM interface.
 
-Job lists show at most the 20 most recently started jobs. The registry retains all running jobs and at most 20 notified completions. Foreground jobs are not retained. Completed jobs retain only the bounded native snapshot, not the larger structured `output` object. Native output-file retention is controlled by Pi.
+Job lists show at most the 20 most recently started jobs. The registry retains all running jobs, undelivered completions, and at most 20 completions confirmed in the conversation. Foreground jobs are not retained. Completed jobs retain only the bounded native snapshot, not the larger structured `output` object. Native output-file retention is controlled by Pi.
 
 ## TUI task widget
 
@@ -111,6 +111,7 @@ This is a read-only view of the job registry. It neither controls execution nor 
 
 - Jobs are owned by one live extension runtime. Shutdown, reload, session replacement, and branch navigation cancel running jobs and discard the registry. This is not a daemon or a scheduler for jobs that must survive Pi exiting.
 - Navigation is fail-closed: a switch/fork/tree navigation **attempt** cancels jobs even if another extension later vetoes the navigation.
+- Enqueueing a steer is not treated as delivery. The original job ID is captured when Pi starts consuming the message, and delivery is confirmed at a turn boundary. Later message transformations by other extensions cannot cause the original result to be replayed. If Escape or `clear_queue` discards a queued result before consumption, it is retained and re-enqueued at the next successful turn boundary. Recovery does not immediately restart an aborted turn or rerun the command. A result still present in Pi's queue is not duplicated.
 - A result already queued with Pi cannot be recalled. Generation checks suppress results not yet sent after cleanup.
 - Print/JSON mode may exit after the initial response; do not expect a background job to survive that exit. Use a live interactive/RPC session when waiting for later notifications.
 - There is no `pbb` CLI, cross-runtime job inspection, `pi-lane` dependency, PID registry, arbitrary signal selection, stale-process killing, restart recovery, or session repair.
@@ -129,7 +130,7 @@ Only documented/public Pi APIs are imported. Host libraries are peer dependencie
 
 ## CI and publishing
 
-GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. The package `@chthub/pi-async-bash` is published on npm. After npm-side trust is configured and `NPM_PUBLISH_ENABLED` is enabled, publishing a stable GitHub Release triggers the automated publishing workflow. See [publishing setup](docs/publishing.md).
+GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. Both release events and manual retries require a published, non-prerelease GitHub Release; a stable-looking version number alone is insufficient. The package `@chthub/pi-async-bash` is published on npm. After npm-side trust is configured and `NPM_PUBLISH_ENABLED` is enabled, publishing a stable GitHub Release triggers the automated publishing workflow. See [publishing setup](docs/publishing.md).
 
 ## License
 

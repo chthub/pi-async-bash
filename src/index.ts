@@ -6,6 +6,13 @@ import { attachJobWidget } from "./widget.ts";
 const DEFAULT_AFTER_SECONDS = 60;
 const MAX_AFTER_SECONDS = 2_147_483_647 / 1000;
 
+function completionId(message: { role?: string; customType?: string; details?: unknown }): string | undefined {
+  if (message.role !== "custom" || message.customType !== "async_bash_result") return undefined;
+  const details = message.details;
+  return details && typeof details === "object" && "job_id" in details && typeof details.job_id === "string"
+    ? details.job_id : undefined;
+}
+
 function summary(job: Job) {
   return {
     job_id: job.id,
@@ -128,6 +135,16 @@ export default function asyncBash(pi: ExtensionAPI) {
 
   pi.on("tool_result", (event) => {
     if (event.toolName === "bash") pool.acknowledge(event.toolCallId);
+  });
+  pi.on("message_start", (event) => {
+    // Unlike message_end, this notification is not a message-transforming hook.
+    // Capture consumption before another extension can replace custom metadata.
+    const id = completionId(event.message);
+    if (id) pool.observeDelivery(id);
+  });
+  pi.on("turn_end", (event, ctx) => {
+    const pending = new Set(event.context.pendingMessages.map(completionId).filter((id): id is string => id !== undefined));
+    pool.reconcileNotifications(pending, event.outcome === "completed" && !ctx.signal?.aborted);
   });
   pi.on("session_start", (_event, ctx) => {
     afterSeconds();

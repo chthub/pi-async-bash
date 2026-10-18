@@ -27,9 +27,15 @@ function controlled() {
   };
 }
 
-function setup(t) {
+function setup(t, { confirm = true } = {}) {
   const notifications = [];
-  const pool = new JobPool((job) => notifications.push({ id: job.id, state: job.state }));
+  const pool = new JobPool((job) => {
+    notifications.push({ id: job.id, state: job.state });
+    if (confirm) {
+      pool.observeDelivery(job.id); // Simulate actual consumption, not enqueue alone.
+      pool.reconcileNotifications(new Set(), false); // Completed turn boundary.
+    }
+  });
   t.after(() => pool.stop());
   let counter = 0;
   const run = (execute, overrides = {}) => pool.run({
@@ -235,4 +241,91 @@ test("late acknowledgements also enforce the terminal retention bound", async (t
   for (const job of completed) pool.acknowledge(job.toolCallId);
   await immediate();
   assert.ok(pool.list().length <= 20, `late acknowledgements retained ${pool.list().length} completed jobs`);
+});
+
+test("enqueue is not delivery; clearing the queue recovers only at a successful boundary", async (t) => {
+  const { pool, notifications, run } = setup(t, { confirm: false });
+  const { job } = await run(async () => result(), { background: true, toolCallId: "clear-queue" });
+  pool.acknowledge(job.toolCallId);
+  await settled(job);
+  await immediate();
+  assert.equal(job.delivery, "queued");
+  assert.equal(notifications.length, 1);
+  pool.reconcileNotifications(new Set([job.id]), true);
+  assert.equal(notifications.length, 1, "still queued must not be enqueued twice");
+  pool.reconcileNotifications(new Set(), false);
+  assert.equal(job.delivery, "pending");
+  assert.equal(notifications.length, 1, "Escape/error must not immediately wake the agent");
+  pool.reconcileNotifications(new Set(), true);
+  assert.equal(job.delivery, "queued");
+  assert.equal(notifications.length, 2);
+  pool.observeDelivery(job.id);
+  assert.equal(job.delivery, "consumed");
+  pool.reconcileNotifications(new Set(), true);
+  assert.equal(job.delivery, "delivered");
+  pool.acknowledge(job.toolCallId);
+  await immediate();
+  assert.equal(notifications.length, 2, "confirmed results are never replayed");
+});
+
+test("undelivered completions are not pruned even after more than twenty jobs finish", async (t) => {
+  const { pool, run } = setup(t, { confirm: false });
+  const ids = [];
+  for (let i = 0; i < 25; i++) {
+    const { job } = await run(async () => result(), { background: true });
+    pool.acknowledge(job.toolCallId);
+    await settled(job);
+    ids.push(job.id);
+  }
+  await immediate();
+  assert.equal(pool.list().length, 25);
+  assert.ok(pool.list().every((job) => job.delivery === "queued"));
+  for (const id of ids) pool.observeDelivery(id);
+  pool.reconcileNotifications(new Set(), false);
+  assert.equal(pool.list().length, 20);
+});
+
+test("a scheduled initial send cannot be duplicated by reconciliation", async (t) => {
+  const { pool, notifications, run } = setup(t, { confirm: false });
+  const { job } = await run(async () => result(), { background: true });
+  await settled(job);
+  pool.acknowledge(job.toolCallId);
+  assert.equal(job.delivery, "scheduled");
+  pool.reconcileNotifications(new Set(), true);
+  assert.equal(notifications.length, 0);
+  await immediate();
+  assert.equal(notifications.length, 1);
+});
+
+test("an enqueue failure keeps the result pending and permits later recovery", async (t) => {
+  let attempts = 0;
+  const pool = new JobPool(() => { if (++attempts === 1) throw new Error("send failed"); });
+  t.after(() => pool.stop());
+  const { job } = await pool.run({ toolCallId: "send-fails", command: ":", background: true, afterSeconds: 0, execute: async () => result() });
+  pool.acknowledge(job.toolCallId);
+  await settled(job);
+  await immediate();
+  assert.equal(job.delivery, "pending");
+  pool.reconcileNotifications(new Set(), true);
+  assert.equal(attempts, 2);
+  assert.equal(job.delivery, "queued");
+});
+
+test("consumption survives missing end metadata and is confirmed even on an aborted boundary", async (t) => {
+  const { pool, notifications, run } = setup(t, { confirm: false });
+  const { job } = await run(async () => result(), { background: true });
+  pool.acknowledge(job.toolCallId);
+  await settled(job);
+  await immediate();
+  pool.observeDelivery(job.id);
+  // A preceding extension can erase customType/details from message_end. There
+  // is intentionally no end-message ID passed to the pool or needed for recovery.
+  pool.acknowledge(job.toolCallId);
+  await immediate();
+  assert.equal(job.delivery, "consumed");
+  assert.equal(notifications.length, 1);
+  pool.reconcileNotifications(new Set(), false);
+  assert.equal(job.delivery, "delivered");
+  pool.reconcileNotifications(new Set(), true);
+  assert.equal(notifications.length, 1);
 });

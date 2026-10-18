@@ -15,8 +15,10 @@ const cli = join(piRoot, typeof manifest.bin === "string" ? manifest.bin : manif
 const text = (message) => typeof message.content === "string" ? message.content :
   (message.content ?? []).filter((block) => block.type === "text").map((block) => block.text).join("\n");
 const jsonl = (value) => value.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
+// Include the fixture's legal replacement customType when counting actual delivery.
+const isCompletion = (message) => ["async_bash_result", "fixture_transformed_result"].includes(message?.customType);
 
-async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false } = {}) {
+async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false, expectAbort = false, completionTransform } = {}) {
   assert.equal(manifest.version, "1.3.0", "Integration contract requires installed Pi 1.3.0");
   const dir = await mkdtemp(join(tmpdir(), "pi-async-bash-integration-"));
   let child;
@@ -30,7 +32,7 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
     }
   });
   for (const name of ["home", "agent", "work", "tmp", "sessions"]) await mkdir(join(dir, name));
-  await writeFile(join(dir, "plan.json"), JSON.stringify({ steps, dynamicTool }));
+  await writeFile(join(dir, "plan.json"), JSON.stringify({ steps, dynamicTool, completionTransform }));
   await writeFile(join(dir, "agent", "settings.json"), JSON.stringify({
     compaction: { enabled: false }, retry: { enabled: false },
   }));
@@ -79,7 +81,8 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
     const deadline = Date.now() + timeout;
     while (!predicate()) {
       const error = events.find((event) => event.type === "extension_error" ||
-        (event.type === "message_end" && event.message?.stopReason === "error"));
+        (event.type === "message_end" && event.message?.stopReason === "error" &&
+          !(expectAbort && /^(?:This operation was aborted|Scripted request aborted)$/.test(event.message.errorMessage ?? ""))));
       if (failure || error || stopped || Date.now() > deadline) {
         throw new Error(`${label}: ${failure?.message ?? error?.error ?? error?.message?.errorMessage ??
           (stopped ? "Pi exited" : "timed out")}\n${stderr}\nRecent event types: ${events.slice(-12).map((event) => event.type).join(", ")}`);
@@ -114,12 +117,12 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
     async run() { await command("prompt", { message: "Run the local integration script." }); },
     async finish(completions = 1) {
       await wait(() => events.filter((event) => event.type === "message_end" &&
-        event.message?.customType === "async_bash_result").length >= completions, "background completion");
+        isCompletion(event.message)).length >= completions, "background completion");
       // A completion can arrive after the first agent_settled; require settlement
       // after the last custom result, not merely the initial tool acknowledgement.
       await wait(() => {
         const last = events.findLastIndex((event) => event.type === "message_end" &&
-          event.message?.customType === "async_bash_result");
+          isCompletion(event.message));
         return events.some((event, index) => index > last && event.type === "agent_settled");
       }, "completion continuation settled");
       return this.snapshot();
@@ -130,7 +133,7 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
       const entries = jsonl(await readFile(state.sessionFile, "utf8"));
       const requests = jsonl(await readFile(join(dir, "requests.jsonl"), "utf8"));
       return { entries, requests, messages: entries.filter((entry) => entry.type === "message").map((entry) => entry.message),
-        completions: entries.filter((entry) => entry.type === "custom_message" && entry.customType === "async_bash_result") };
+        completions: entries.filter((entry) => entry.type === "custom_message" && isCompletion(entry)) };
     },
   };
 }
@@ -265,6 +268,152 @@ test("real Pi: RPC stdin EOF cancels a live job without a shutdown notification"
     "no completion may be persisted during shutdown");
   assert.equal(pi.events.some((event) => event.message?.customType === "async_bash_result"), false,
     "no completion may be delivered to a shutting-down session");
+});
+
+// Keep the outer codemode call open after the child has reached a terminal state.
+// Polling is test synchronization, not the extension's completion delivery mechanism.
+// A subsequent foreground output update proves the event loop has advanced beyond
+// completion scheduling; no wall-clock guess decides when clear_queue is safe.
+async function queuedCompletionFixture(t, { completionTransform } = {}) {
+  const pi = await launch(t, [{ tool: "codemode", args: { code: `
+    const job = await tools.bash({
+      command: "printf 'once\\n' >> recovery-executions.txt; printf recovery-complete",
+      background: true,
+    });
+    text(job);
+    let completed = false;
+    for (let attempt = 0; attempt < 100; attempt++) {
+      const status = JSON.parse((await tools.bash_jobs({ action: "status", job_id: job.job_id })).split("\\n")[0]);
+      if (status.state === "completed") { completed = true; break; }
+      await tools.bash({ command: "sleep 0.01" });
+    }
+    if (!completed) throw Error("background job did not reach completed");
+    await tools.bash({ command: "printf recovery-holder-ready; sleep 30", timeout: 35 });
+  ` } }], { codemode: true, expectAbort: true, completionTransform });
+  await pi.run();
+  await pi.wait(() => pi.events.some((event) => event.type === "tool_execution_update" &&
+    event.toolName === "bash" && text(event.partialResult).includes("recovery-holder-ready")), "completed job queued behind foreground holder");
+  assert.equal((await pi.snapshot()).completions.length, 0, "the outer tool batch must still hold the completion");
+  assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n");
+  return pi;
+}
+
+async function promptAndSettle(pi) {
+  const start = pi.events.length;
+  await pi.run();
+  await pi.wait(() => pi.events.slice(start).some((event) => event.type === "agent_settled"), "new user turn settled");
+}
+
+for (const clearCount of [0, 1, 3]) {
+  test(`real Pi: queued completion survives ${clearCount ? `${clearCount} queue clear(s) then ` : ""}abort exactly once on the next user turn`, { timeout: 45000 }, async (t) => {
+    const pi = await queuedCompletionFixture(t);
+    for (let attempt = 0; attempt < clearCount; attempt++) {
+      await pi.command("clear_queue");
+    }
+    const startsBeforeAbort = pi.events.filter((event) => event.type === "agent_start").length;
+    await pi.command("abort");
+    const interrupted = await pi.snapshot();
+    if (clearCount > 0) assert.equal(interrupted.completions.length, 0, "clear_queue removed the undelivered completion");
+    await delay(150);
+    assert.equal(pi.events.filter((event) => event.type === "agent_start").length, startsBeforeAbort,
+      "recovery must not undo the user's stop by waking the agent immediately");
+
+    // Wait for the whole successful run, not its first assistant/tool result:
+    // turn_end recovery can enqueue the completion after that first result.
+    await promptAndSettle(pi);
+    const recovered = await pi.snapshot();
+    assert.equal(recovered.completions.length, 1, "the next user run must deliver exactly one completion");
+    assert.equal(recovered.completions[0].details.state, "completed");
+    assert.match(text(recovered.completions[0]), /recovery-complete/);
+    assert.deepEqual(recovered.entries.slice(0, interrupted.entries.length), interrupted.entries,
+      "recovery may append but cannot rewrite interrupted history");
+    assert.equal(recovered.entries.some((entry) => entry.type === "context_edit"), false);
+
+    // A second user run must not replay either a recovered or a normally queued result.
+    await promptAndSettle(pi);
+    const final = await pi.snapshot();
+    assert.equal(final.completions.length, 1);
+    assert.equal(pi.events.filter((event) => event.type === "message_end" &&
+      event.message?.customType === "async_bash_result").length, 1);
+    assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n",
+      "recover notification delivery, never rerun the original command");
+  });
+}
+
+function checkTransformedCompletion(saved, transform) {
+  assert.equal(saved.completions.length, 1, "a transformed completion must be consumed exactly once");
+  const completion = saved.completions[0];
+  if (transform === "drop-details") {
+    assert.equal(completion.customType, "async_bash_result");
+    assert.equal(completion.details, undefined, "the preceding handler actually removed correlation metadata");
+  } else {
+    assert.equal(completion.customType, "fixture_transformed_result");
+    assert.match(completion.details.job_id, /^bg-/);
+  }
+  assert.equal(saved.entries.some((entry) => entry.type === "context_edit"), false);
+}
+
+for (const transform of ["drop-details", "replace-custom-type"]) {
+  test(`real Pi: preceding message_end transformer ${transform} cannot cause a notification loop`, { timeout: 45000 }, async (t) => {
+    const pi = await launch(t, [{ tool: "bash", args: {
+      command: "printf 'once\\n' >> transformed-executions.txt; sleep 0.1; printf transformed-complete",
+      background: true,
+    } }], { completionTransform: transform });
+    await pi.run();
+    const saved = await pi.finish();
+    checkHistory(saved, "bash", "transformed-complete");
+    checkTransformedCompletion(saved, transform);
+    await promptAndSettle(pi);
+    const final = await pi.snapshot();
+    checkTransformedCompletion(final, transform);
+    assert.equal(pi.events.filter((event) => event.type === "message_end" && isCompletion(event.message)).length, 1);
+    assert.equal(await readFile(join(pi.dir, "work", "transformed-executions.txt"), "utf8"), "once\n");
+  });
+
+  test(`real Pi: queue-clear recovery still delivers once with preceding ${transform} transformer`, { timeout: 45000 }, async (t) => {
+    const pi = await queuedCompletionFixture(t, { completionTransform: transform });
+    await pi.command("clear_queue");
+    const startsBeforeAbort = pi.events.filter((event) => event.type === "agent_start").length;
+    await pi.command("abort");
+    const interrupted = await pi.snapshot();
+    assert.equal(interrupted.completions.length, 0);
+    await delay(150);
+    assert.equal(pi.events.filter((event) => event.type === "agent_start").length, startsBeforeAbort,
+      "transformed notifications must not override the user's stop");
+    await promptAndSettle(pi);
+    const recovered = await pi.snapshot();
+    checkTransformedCompletion(recovered, transform);
+    assert.match(text(recovered.completions[0]), /recovery-complete/);
+    assert.deepEqual(recovered.entries.slice(0, interrupted.entries.length), interrupted.entries);
+    await promptAndSettle(pi);
+    checkTransformedCompletion(await pi.snapshot(), transform);
+    assert.equal(pi.events.filter((event) => event.type === "message_end" && isCompletion(event.message)).length, 1);
+    assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n");
+  });
+}
+
+test("real Pi: session replacement discards an undelivered completion instead of recovering it into the new session", { timeout: 45000 }, async (t) => {
+  const pi = await queuedCompletionFixture(t);
+  await pi.command("clear_queue");
+  await pi.command("abort");
+  const before = await pi.command("get_state");
+  // Runtime replacement reloads the keyless provider; make its new-session plan
+  // inspect the empty registry, rather than launching the original command again.
+  await writeFile(join(pi.dir, "plan.json"), JSON.stringify({
+    steps: [{ tool: "bash_jobs", args: { action: "list" } }],
+  }));
+  await pi.command("new_session");
+  const after = await pi.command("get_state");
+  assert.notEqual(after.sessionId, before.sessionId);
+  await promptAndSettle(pi);
+  const saved = await pi.snapshot();
+  assert.equal(saved.completions.length, 0);
+  const listed = saved.messages.find((message) => message.toolName === "bash_jobs");
+  assert.ok(listed, "new session inspected its registry");
+  assert.deepEqual(JSON.parse(text(listed)), { total: 0, jobs: [] });
+  assert.equal(pi.events.filter((event) => event.type === "message_end" &&
+    event.message?.customType === "async_bash_result").length, 0);
+  assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n");
 });
 
 test("real Pi: late tool registration coexists with completion and append-only history", { timeout: 45000 }, async (t) => {

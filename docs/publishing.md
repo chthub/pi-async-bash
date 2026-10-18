@@ -48,16 +48,22 @@ when ready to release; if it expires, recreate it in npm settings.
 1. Update `version` in `package.json` and `package-lock.json`, then commit to `main`.
 2. Tag that commit `v<version>` and push the tag. Create/publish a GitHub Release
    for it. The `Publish npm` workflow runs only when enabled above.
-3. The workflow verifies the package name, exact stable version/tag, repository
-   URL, public registry/access, and that the tagged commit is an ancestor of
+3. Before checkout, the workflow checks the triggering event and fetches the
+   GitHub Release for the exact tag using a read-only GitHub token. Draft,
+   prerelease, unpublished, missing, and mismatched releases are rejected for
+   both automatic releases and manual retries—even when the version looks stable.
+   It also verifies the package name, exact stable version/tag, repository URL,
+   public registry/access, and that the tagged commit is an ancestor of
    `origin/main`. It reruns all tests, inspects the package, and publishes with
    npm OIDC and provenance. No `NPM_TOKEN` secret is needed.
 
-Manual retry is available through `workflow_dispatch` with an existing tag.
+Manual retry is available through `workflow_dispatch` with the tag of an existing
+published, non-prerelease GitHub Release. A bare tag alone is insufficient.
 A version already published to npm cannot be overwritten. Do not reuse the
 bootstrap version for the first Actions publish: bump the version first.
-This workflow supports stable releases only; prerelease versions are rejected
-rather than accidentally changing the `latest` dist-tag.
+This workflow supports stable releases only: prerelease SemVer strings and
+GitHub Releases marked as prerelease are rejected rather than accidentally
+changing the `latest` dist-tag.
 
 ## References
 
