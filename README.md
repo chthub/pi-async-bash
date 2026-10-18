@@ -129,7 +129,7 @@ Only documented/public Pi APIs are imported. Host libraries are peer dependencie
 
 ## CI and publishing
 
-GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. The package `@chthub/pi-async-bash@0.1.0` is published; automated publishing remains disabled until npm-side trust is configured. See [publishing setup](docs/publishing.md).
+GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. The package `@chthub/pi-async-bash` is published on npm. After npm-side trust is configured and `NPM_PUBLISH_ENABLED` is enabled, publishing a stable GitHub Release triggers the automated publishing workflow. See [publishing setup](docs/publishing.md).
 
 ## License
 

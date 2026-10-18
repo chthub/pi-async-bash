@@ -1,6 +1,6 @@
 {
   "name": "@chthub/pi-async-bash",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "A thin background-job wrapper around Pi's native bash tool.",
   "type": "module",
   "license": "MIT",

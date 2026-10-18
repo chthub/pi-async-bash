@@ -3,12 +3,13 @@
 ## Current status
 
 The GitHub repository is public and can be installed through Pi's Git source.
-**`@chthub/pi-async-bash@0.1.0` is published on npm.**
+**`@chthub/pi-async-bash` is published on npm; `0.1.0` was the bootstrap release.**
 The unscoped name `pi-async-bash` is already owned by an unrelated publisher.
 Do not install that npm package expecting this repository's code.
 
-Automated publishing is deliberately disabled until an npm trusted publisher
-is configured. No npm credentials are stored in this repository or required for tests.
+Automated publishing uses npm trusted publishing (OIDC), gated by the repository
+variable `NPM_PUBLISH_ENABLED`. Keep this disabled until npm-side trust is configured.
+No npm credentials are stored in this repository or required for tests.
 
 ## CI
 
