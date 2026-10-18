@@ -1,0 +1,54 @@
+{
+  "name": "pi-async-bash",
+  "version": "0.1.0",
+  "description": "A thin background-job wrapper around Pi's native bash tool.",
+  "type": "module",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/chthub/pi-async-bash.git"
+  },
+  "homepage": "https://github.com/chthub/pi-async-bash#readme",
+  "bugs": {
+    "url": "https://github.com/chthub/pi-async-bash/issues"
+  },
+  "keywords": [
+    "pi-package",
+    "pi",
+    "bash",
+    "background"
+  ],
+  "engines": {
+    "node": ">=22.19.0"
+  },
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "files": [
+    "src",
+    "README.md",
+    "LICENSE"
+  ],
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "npm run typecheck && node --experimental-strip-types --test test/*.test.mjs",
+    "test:integration": "node --experimental-strip-types --test test/rpc.integration.mjs"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*",
+    "@earendil-works/pi-agent-core": "*",
+    "@earendil-works/pi-tui": "*",
+    "typebox": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-ai": "1.3.0",
+    "@earendil-works/pi-coding-agent": "1.3.0",
+    "@earendil-works/pi-agent-core": "1.3.0",
+    "@earendil-works/pi-tui": "1.3.0",
+    "@types/node": "^22.19.0",
+    "typescript": "^5.9.3",
+    "typebox": "1.3.27"
+  }
+}
