@@ -154,8 +154,8 @@ export class JobPool {
   }
 
   /** Observe the public turn boundary, after earlier steering has been consumed.
-   * Clear-queue/Escape can discard a queued custom message. Do not wake an aborted
-   * run to recover it; retry at the next successful turn's normal tool boundary.
+   * Clear-queue/Escape can discard a queued custom message. Record missing items
+   * while aborting; the settled handler retries them after that run has stopped.
    */
   reconcileNotifications(pendingIds: ReadonlySet<string>, retry: boolean): void {
     if (this.closed) return;
@@ -169,6 +169,15 @@ export class JobPool {
       if (retry && job.delivery === "pending" && !pendingIds.has(job.id)) this.enqueue(job);
     }
     this.prune();
+  }
+
+  /** Retry only missing notifications, once the aborted run has fully stopped.
+   * deliver() marks them scheduled before deferring, so repeated settlement
+   * signals cannot enqueue duplicates. Queued/consumed/delivered items are skipped.
+   */
+  retryPendingNotifications(): void {
+    if (this.closed) return;
+    for (const job of this.jobs.values()) this.deliver(job, this.generation);
   }
 
   get(id: string): Job {

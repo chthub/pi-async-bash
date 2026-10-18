@@ -7,6 +7,7 @@ import { Type } from "typebox";
 export default function scriptedProvider(pi) {
   const plan = JSON.parse(readFileSync(process.env.ASYNC_BASH_TEST_PLAN, "utf8"));
   let request = 0;
+  let scriptedUserTurns = 0;
   const model = {
     id: "scripted", name: "Scripted integration model", provider: "async-bash-test",
     api: "async-bash-test", baseUrl: "http://invalid.invalid",
@@ -16,7 +17,15 @@ export default function scriptedProvider(pi) {
   function stream(_model, context, options = {}) {
     const events = createAssistantMessageEventStream();
     const index = request++;
-    const step = plan.steps[index];
+    // Opt-in repeated user rounds let one live runtime exercise independent Esc
+    // recovery cycles; custom-message wakeups must never relaunch the command.
+    const userTurns = plan.repeatStepOnUserPrompt ? context.messages.filter((message) =>
+      message.role === "user" && (typeof message.content === "string" ? message.content :
+        message.content.filter((part) => part.type === "text").map((part) => part.text).join("\n")) === plan.repeatStepOnUserPrompt).length : 0;
+    const step = plan.repeatStepOnUserPrompt
+      ? (userTurns > scriptedUserTurns ? plan.steps[0] : undefined)
+      : plan.steps[index];
+    scriptedUserTurns = userTurns;
     const output = {
       role: "assistant", content: [], api: model.api, provider: model.provider, model: model.id,
       timestamp: Date.now(), stopReason: "pending",

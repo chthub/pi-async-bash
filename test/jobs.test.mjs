@@ -243,7 +243,7 @@ test("late acknowledgements also enforce the terminal retention bound", async (t
   assert.ok(pool.list().length <= 20, `late acknowledgements retained ${pool.list().length} completed jobs`);
 });
 
-test("enqueue is not delivery; clearing the queue recovers only at a successful boundary", async (t) => {
+test("enqueue is not delivery; a cleared notification is resent once after abort settles", async (t) => {
   const { pool, notifications, run } = setup(t, { confirm: false });
   const { job } = await run(async () => result(), { background: true, toolCallId: "clear-queue" });
   pool.acknowledge(job.toolCallId);
@@ -253,10 +253,17 @@ test("enqueue is not delivery; clearing the queue recovers only at a successful 
   assert.equal(notifications.length, 1);
   pool.reconcileNotifications(new Set([job.id]), true);
   assert.equal(notifications.length, 1, "still queued must not be enqueued twice");
+  pool.retryPendingNotifications();
+  await immediate();
+  assert.equal(notifications.length, 1, "settlement must not resend a notification still queued");
   pool.reconcileNotifications(new Set(), false);
   assert.equal(job.delivery, "pending");
-  assert.equal(notifications.length, 1, "Escape/error must not immediately wake the agent");
-  pool.reconcileNotifications(new Set(), true);
+  assert.equal(notifications.length, 1, "must not restart the run while it is still aborting");
+  pool.retryPendingNotifications();
+  pool.retryPendingNotifications();
+  assert.equal(job.delivery, "scheduled");
+  assert.equal(notifications.length, 1);
+  await immediate();
   assert.equal(job.delivery, "queued");
   assert.equal(notifications.length, 2);
   pool.observeDelivery(job.id);
@@ -264,6 +271,7 @@ test("enqueue is not delivery; clearing the queue recovers only at a successful 
   pool.reconcileNotifications(new Set(), true);
   assert.equal(job.delivery, "delivered");
   pool.acknowledge(job.toolCallId);
+  pool.retryPendingNotifications();
   await immediate();
   assert.equal(notifications.length, 2, "confirmed results are never replayed");
 });
@@ -324,8 +332,44 @@ test("consumption survives missing end metadata and is confirmed even on an abor
   await immediate();
   assert.equal(job.delivery, "consumed");
   assert.equal(notifications.length, 1);
+  pool.retryPendingNotifications();
+  await immediate();
+  assert.equal(notifications.length, 1, "consumed messages must not be resent after abort");
   pool.reconcileNotifications(new Set(), false);
   assert.equal(job.delivery, "delivered");
   pool.reconcileNotifications(new Set(), true);
   assert.equal(notifications.length, 1);
+});
+
+test("each later cleared attempt can recover once without rerunning the command", async (t) => {
+  const { pool, notifications, run } = setup(t, { confirm: false });
+  let executions = 0;
+  const { job } = await run(async () => { executions++; return result(); }, { background: true });
+  pool.acknowledge(job.toolCallId);
+  await settled(job);
+  await immediate();
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    pool.reconcileNotifications(new Set(), false);
+    pool.retryPendingNotifications();
+    pool.retryPendingNotifications();
+    await immediate();
+    assert.equal(notifications.length, attempt + 1);
+  }
+  assert.equal(executions, 1);
+});
+
+test("shutdown suppresses recovery scheduled at aborted settlement", async (t) => {
+  const { pool, notifications, run } = setup(t, { confirm: false });
+  const { job } = await run(async () => result(), { background: true });
+  pool.acknowledge(job.toolCallId);
+  await settled(job);
+  await immediate();
+  pool.reconcileNotifications(new Set(), false);
+  pool.retryPendingNotifications();
+  await pool.stop();
+  pool.retryPendingNotifications();
+  pool.start();
+  await immediate();
+  assert.equal(notifications.length, 1);
+  assert.deepEqual(pool.list(), []);
 });

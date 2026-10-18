@@ -11,6 +11,7 @@ Pi runs the command. This extension only decides when to stop waiting and how to
 - `bash({ command, background: true })` returns a job ID immediately.
 - Normal bash calls automatically move to the background after 60 seconds.
 - Completed background jobs send an `async_bash_result` steering message. Pi delivers it at a tool-batch boundary, or wakes the agent when idle.
+- If Escape clears a completion notice, it is resent after the interrupted run stops. This can wake the agent again without a new user prompt.
 - `bash_jobs` lists, inspects, or cancels jobs in the current runtime.
 - In interactive TUI mode, a read-only widget below the editor shows active background jobs, elapsed time, and cancellation status.
 
@@ -111,7 +112,8 @@ This is a read-only view of the job registry. It neither controls execution nor 
 
 - Jobs are owned by one live extension runtime. Shutdown, reload, session replacement, and branch navigation cancel running jobs and discard the registry. This is not a daemon or a scheduler for jobs that must survive Pi exiting.
 - Navigation is fail-closed: a switch/fork/tree navigation **attempt** cancels jobs even if another extension later vetoes the navigation.
-- Enqueueing a steer is not treated as delivery. The original job ID is captured when Pi starts consuming the message, and delivery is confirmed at a turn boundary. Later message transformations by other extensions cannot cause the original result to be replayed. If Escape or `clear_queue` discards a queued result before consumption, it is retained and re-enqueued at the next successful turn boundary. Recovery does not immediately restart an aborted turn or rerun the command. A result still present in Pi's queue is not duplicated.
+- Enqueueing a steer is not treated as delivery. The original job ID is captured when Pi starts consuming the message, and delivery is confirmed at a turn boundary. Later message transformations by other extensions cannot cause the original result to be replayed. If Escape clears a queued result before consumption, the result is retained and sent again once the aborted run has settled. That steer may immediately wake the model; no new user prompt is required. The original command is never rerun. Messages still queued or already consumed are not resent; clearing a later attempt permits one further retry after the next abort settles.
+- Queue-loss detection uses Pi's public `turn_end` snapshot. If another extension clears the queue after the final snapshot (for example inside a delayed `agent_end` handler), Pi exposes no fresh queue snapshot at settlement; detection/recovery then occurs at a later turn boundary. The plugin does not intercept Esc or access private queues.
 - A result already queued with Pi cannot be recalled. Generation checks suppress results not yet sent after cleanup.
 - Print/JSON mode may exit after the initial response; do not expect a background job to survive that exit. Use a live interactive/RPC session when waiting for later notifications.
 - There is no `pbb` CLI, cross-runtime job inspection, `pi-lane` dependency, PID registry, arbitrary signal selection, stale-process killing, restart recovery, or session repair.

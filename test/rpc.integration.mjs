@@ -17,8 +17,9 @@ const text = (message) => typeof message.content === "string" ? message.content 
 const jsonl = (value) => value.trim().split("\n").filter(Boolean).map((line) => JSON.parse(line));
 // Include the fixture's legal replacement customType when counting actual delivery.
 const isCompletion = (message) => ["async_bash_result", "fixture_transformed_result"].includes(message?.customType);
+const RUN_PROMPT = "Run the local integration script.";
 
-async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false, expectAbort = false, completionTransform } = {}) {
+async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false, expectAbort = false, completionTransform, repeatUserStep = false } = {}) {
   assert.equal(manifest.version, "1.3.0", "Integration contract requires installed Pi 1.3.0");
   const dir = await mkdtemp(join(tmpdir(), "pi-async-bash-integration-"));
   let child;
@@ -32,7 +33,9 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
     }
   });
   for (const name of ["home", "agent", "work", "tmp", "sessions"]) await mkdir(join(dir, name));
-  await writeFile(join(dir, "plan.json"), JSON.stringify({ steps, dynamicTool, completionTransform }));
+  await writeFile(join(dir, "plan.json"), JSON.stringify({ steps, dynamicTool, completionTransform,
+    ...(repeatUserStep ? { repeatStepOnUserPrompt: RUN_PROMPT } : {}),
+  }));
   await writeFile(join(dir, "agent", "settings.json"), JSON.stringify({
     compaction: { enabled: false }, retry: { enabled: false },
   }));
@@ -114,7 +117,7 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
   await command("get_state");
   return {
     events, command, wait, dir, stop,
-    async run() { await command("prompt", { message: "Run the local integration script." }); },
+    async run() { await command("prompt", { message: RUN_PROMPT }); },
     async finish(completions = 1) {
       await wait(() => events.filter((event) => event.type === "message_end" &&
         isCompletion(event.message)).length >= completions, "background completion");
@@ -274,7 +277,7 @@ test("real Pi: RPC stdin EOF cancels a live job without a shutdown notification"
 // Polling is test synchronization, not the extension's completion delivery mechanism.
 // A subsequent foreground output update proves the event loop has advanced beyond
 // completion scheduling; no wall-clock guess decides when clear_queue is safe.
-async function queuedCompletionFixture(t, { completionTransform } = {}) {
+async function queuedCompletionFixture(t, { completionTransform, repeatUserStep = false } = {}) {
   const pi = await launch(t, [{ tool: "codemode", args: { code: `
     const job = await tools.bash({
       command: "printf 'once\\n' >> recovery-executions.txt; printf recovery-complete",
@@ -289,13 +292,18 @@ async function queuedCompletionFixture(t, { completionTransform } = {}) {
     }
     if (!completed) throw Error("background job did not reach completed");
     await tools.bash({ command: "printf recovery-holder-ready; sleep 30", timeout: 35 });
-  ` } }], { codemode: true, expectAbort: true, completionTransform });
-  await pi.run();
-  await pi.wait(() => pi.events.some((event) => event.type === "tool_execution_update" &&
-    event.toolName === "bash" && text(event.partialResult).includes("recovery-holder-ready")), "completed job queued behind foreground holder");
-  assert.equal((await pi.snapshot()).completions.length, 0, "the outer tool batch must still hold the completion");
-  assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n");
+  ` } }], { codemode: true, expectAbort: true, completionTransform, repeatUserStep });
+  await startQueuedCompletionRound(pi, 1);
   return pi;
+}
+
+async function startQueuedCompletionRound(pi, round) {
+  const start = pi.events.length;
+  await pi.run();
+  await pi.wait(() => pi.events.slice(start).some((event) => event.type === "tool_execution_update" &&
+    event.toolName === "bash" && text(event.partialResult).includes("recovery-holder-ready")), "completed job queued behind foreground holder");
+  assert.equal((await pi.snapshot()).completions.length, round - 1, "the outer tool batch must still hold this round's completion");
+  assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n".repeat(round));
 }
 
 async function promptAndSettle(pi) {
@@ -304,41 +312,68 @@ async function promptAndSettle(pi) {
   await pi.wait(() => pi.events.slice(start).some((event) => event.type === "agent_settled"), "new user turn settled");
 }
 
+function checkRecoveryAfterAbort(pi, abortStart, completionCount = 1) {
+  const settled = pi.events.findIndex((event, index) => index >= abortStart && event.type === "agent_settled" && event.aborted);
+  assert.ok(settled >= abortStart, "the interrupted run must first report aborted settlement");
+  const completion = pi.events.findIndex((event, index) => index > settled && event.type === "message_end" && isCompletion(event.message));
+  assert.ok(completion > settled, "recovery must deliver after the aborted run settles");
+  assert.ok(pi.events.some((event, index) => index > settled && index < completion && event.type === "agent_start"),
+    "the missing completion must wake a new run without another user prompt");
+  assert.equal(pi.events.filter((event) => event.type === "message_end" && isCompletion(event.message)).length, completionCount);
+}
+
 for (const clearCount of [0, 1, 3]) {
-  test(`real Pi: queued completion survives ${clearCount ? `${clearCount} queue clear(s) then ` : ""}abort exactly once on the next user turn`, { timeout: 45000 }, async (t) => {
+  test(`real Pi: queued completion survives ${clearCount ? `${clearCount} queue clear(s) then abort with immediate recovery` : "abort without clearing, without a duplicate wake"}`, { timeout: 45000 }, async (t) => {
     const pi = await queuedCompletionFixture(t);
-    for (let attempt = 0; attempt < clearCount; attempt++) {
-      await pi.command("clear_queue");
-    }
+    const beforeAbort = await pi.snapshot();
+    for (let attempt = 0; attempt < clearCount; attempt++) await pi.command("clear_queue");
+    const abortStart = pi.events.length;
     const startsBeforeAbort = pi.events.filter((event) => event.type === "agent_start").length;
     await pi.command("abort");
-    const interrupted = await pi.snapshot();
-    if (clearCount > 0) assert.equal(interrupted.completions.length, 0, "clear_queue removed the undelivered completion");
-    await delay(150);
-    assert.equal(pi.events.filter((event) => event.type === "agent_start").length, startsBeforeAbort,
-      "recovery must not undo the user's stop by waking the agent immediately");
-
-    // Wait for the whole successful run, not its first assistant/tool result:
-    // turn_end recovery can enqueue the completion after that first result.
-    await promptAndSettle(pi);
-    const recovered = await pi.snapshot();
-    assert.equal(recovered.completions.length, 1, "the next user run must deliver exactly one completion");
+    let recovered;
+    if (clearCount > 0) {
+      recovered = await pi.finish(); // Deliberately no new user prompt.
+      checkRecoveryAfterAbort(pi, abortStart);
+      assert.equal(recovered.messages.filter((message) => message.role === "user").length,
+        beforeAbort.messages.filter((message) => message.role === "user").length);
+    } else {
+      await delay(150);
+      assert.equal(pi.events.filter((event) => event.type === "agent_start").length, startsBeforeAbort,
+        "a notification still queued or already consumed must not cause a recovery wake");
+      await promptAndSettle(pi);
+      recovered = await pi.snapshot();
+    }
+    assert.equal(recovered.completions.length, 1);
     assert.equal(recovered.completions[0].details.state, "completed");
     assert.match(text(recovered.completions[0]), /recovery-complete/);
-    assert.deepEqual(recovered.entries.slice(0, interrupted.entries.length), interrupted.entries,
+    assert.deepEqual(recovered.entries.slice(0, beforeAbort.entries.length), beforeAbort.entries,
       "recovery may append but cannot rewrite interrupted history");
     assert.equal(recovered.entries.some((entry) => entry.type === "context_edit"), false);
 
-    // A second user run must not replay either a recovered or a normally queued result.
     await promptAndSettle(pi);
-    const final = await pi.snapshot();
-    assert.equal(final.completions.length, 1);
-    assert.equal(pi.events.filter((event) => event.type === "message_end" &&
-      event.message?.customType === "async_bash_result").length, 1);
+    assert.equal((await pi.snapshot()).completions.length, 1);
+    assert.equal(pi.events.filter((event) => event.type === "message_end" && isCompletion(event.message)).length, 1);
     assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n",
       "recover notification delivery, never rerun the original command");
   });
 }
+
+test("real Pi: distinct interrupted rounds each recover immediately after Esc without replaying earlier jobs", { timeout: 45000 }, async (t) => {
+  const pi = await queuedCompletionFixture(t, { repeatUserStep: true });
+  for (let round = 1; round <= 3; round++) {
+    if (round > 1) await startQueuedCompletionRound(pi, round);
+    await pi.command("clear_queue");
+    const abortStart = pi.events.length;
+    await pi.command("abort");
+    const recovered = await pi.finish(round);
+    checkRecoveryAfterAbort(pi, abortStart, round);
+    assert.equal(recovered.completions.length, round);
+    assert.equal(new Set(recovered.completions.map((message) => message.details.job_id)).size, round);
+    assert.equal(recovered.messages.filter((message) => message.role === "user").length, round,
+      "each recovery must finish without an additional user prompt");
+    assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n".repeat(round));
+  }
+});
 
 function checkTransformedCompletion(saved, transform) {
   assert.equal(saved.completions.length, 1, "a transformed completion must be consumed exactly once");
@@ -372,19 +407,15 @@ for (const transform of ["drop-details", "replace-custom-type"]) {
 
   test(`real Pi: queue-clear recovery still delivers once with preceding ${transform} transformer`, { timeout: 45000 }, async (t) => {
     const pi = await queuedCompletionFixture(t, { completionTransform: transform });
+    const beforeAbort = await pi.snapshot();
     await pi.command("clear_queue");
-    const startsBeforeAbort = pi.events.filter((event) => event.type === "agent_start").length;
+    const abortStart = pi.events.length;
     await pi.command("abort");
-    const interrupted = await pi.snapshot();
-    assert.equal(interrupted.completions.length, 0);
-    await delay(150);
-    assert.equal(pi.events.filter((event) => event.type === "agent_start").length, startsBeforeAbort,
-      "transformed notifications must not override the user's stop");
-    await promptAndSettle(pi);
-    const recovered = await pi.snapshot();
+    const recovered = await pi.finish(); // Recovery cannot depend on a fresh user prompt.
+    checkRecoveryAfterAbort(pi, abortStart);
     checkTransformedCompletion(recovered, transform);
     assert.match(text(recovered.completions[0]), /recovery-complete/);
-    assert.deepEqual(recovered.entries.slice(0, interrupted.entries.length), interrupted.entries);
+    assert.deepEqual(recovered.entries.slice(0, beforeAbort.entries.length), beforeAbort.entries);
     await promptAndSettle(pi);
     checkTransformedCompletion(await pi.snapshot(), transform);
     assert.equal(pi.events.filter((event) => event.type === "message_end" && isCompletion(event.message)).length, 1);
@@ -392,29 +423,37 @@ for (const transform of ["drop-details", "replace-custom-type"]) {
   });
 }
 
-test("real Pi: session replacement discards an undelivered completion instead of recovering it into the new session", { timeout: 45000 }, async (t) => {
-  const pi = await queuedCompletionFixture(t);
-  await pi.command("clear_queue");
-  await pi.command("abort");
-  const before = await pi.command("get_state");
-  // Runtime replacement reloads the keyless provider; make its new-session plan
-  // inspect the empty registry, rather than launching the original command again.
-  await writeFile(join(pi.dir, "plan.json"), JSON.stringify({
-    steps: [{ tool: "bash_jobs", args: { action: "list" } }],
-  }));
-  await pi.command("new_session");
-  const after = await pi.command("get_state");
-  assert.notEqual(after.sessionId, before.sessionId);
-  await promptAndSettle(pi);
-  const saved = await pi.snapshot();
-  assert.equal(saved.completions.length, 0);
-  const listed = saved.messages.find((message) => message.toolName === "bash_jobs");
-  assert.ok(listed, "new session inspected its registry");
-  assert.deepEqual(JSON.parse(text(listed)), { total: 0, jobs: [] });
-  assert.equal(pi.events.filter((event) => event.type === "message_end" &&
-    event.message?.customType === "async_bash_result").length, 0);
-  assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n");
-});
+for (const abortFirst of [false, true]) {
+  test(`real Pi: session replacement ${abortFirst ? "after standalone abort" : "during the interrupted run"} never leaks a completion into the new session`, { timeout: 45000 }, async (t) => {
+    const pi = await queuedCompletionFixture(t);
+    await pi.command("clear_queue");
+    const before = await pi.command("get_state");
+    // A standalone abort may recover into the old session before replacement
+    // begins. That is legitimate; new_session itself also aborts the active run.
+    if (abortFirst) await pi.command("abort");
+    // Replacement reloads the keyless provider. Inspect the new empty registry
+    // rather than accidentally launching the original command again.
+    await writeFile(join(pi.dir, "plan.json"), JSON.stringify({
+      steps: [{ tool: "bash_jobs", args: { action: "list" } }],
+    }));
+    await pi.command("new_session");
+    const replacedAt = pi.events.length;
+    const after = await pi.command("get_state");
+    assert.notEqual(after.sessionId, before.sessionId);
+    await promptAndSettle(pi);
+    const saved = await pi.snapshot();
+    assert.equal(saved.completions.length, 0, "the new session must not receive any old completion");
+    const listed = saved.messages.find((message) => message.toolName === "bash_jobs");
+    assert.ok(listed, "new session inspected its registry");
+    assert.deepEqual(JSON.parse(text(listed)), { total: 0, jobs: [] });
+    assert.equal(pi.events.slice(replacedAt).filter((event) => event.type === "message_end" && isCompletion(event.message)).length, 0);
+    const oldEntries = jsonl(await readFile(before.sessionFile, "utf8"));
+    const oldCompletions = oldEntries.filter((entry) => entry.type === "custom_message" && isCompletion(entry));
+    assert.ok(oldCompletions.length <= 1, "at most one recovery is allowed in the outgoing session");
+    if (!abortFirst) assert.equal(oldCompletions.length, 0, "navigation cleanup precedes its abort/recovery boundary");
+    assert.equal(await readFile(join(pi.dir, "work", "recovery-executions.txt"), "utf8"), "once\n");
+  });
+}
 
 test("real Pi: late tool registration coexists with completion and append-only history", { timeout: 45000 }, async (t) => {
   const pi = await launch(t, [
