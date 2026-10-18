@@ -36,7 +36,13 @@ To enable codemode as well:
 pi --no-extensions -e ./src/index.ts -e builtin:codemode --tools +codemode
 ```
 
-**npm name warning:** the unscoped npm package `pi-async-bash` belongs to an unrelated publisher. This repository has not yet published an npm package. Use the GitHub install below, not `pi install npm:pi-async-bash`.
+**npm package name:** `@chthub/pi-async-bash` (first publication pending). Until it is published, use the GitHub install below. The unscoped npm package `pi-async-bash` belongs to an unrelated publisher; do not use `pi install npm:pi-async-bash` for this project.
+
+After the first npm publication, installation will be:
+
+```sh
+pi install npm:@chthub/pi-async-bash
+```
 
 To install from GitHub after removing/disabling the old bash override:
 
@@ -125,7 +131,7 @@ Only documented/public Pi APIs are imported. Host libraries are peer dependencie
 
 ## CI and publishing
 
-GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. It remains disabled until an owned npm package name and npm-side trust are configured. See [publishing setup](docs/publishing.md).
+GitHub Actions runs CI on Node.js 22.19.0 and 24. An opt-in release workflow supports public npm publishing through OIDC trusted publishing and provenance, with tests and release guards before upload. The package name is `@chthub/pi-async-bash`; publishing remains disabled until npm-side permissions and trust are configured. See [publishing setup](docs/publishing.md).
 
 ## License
 

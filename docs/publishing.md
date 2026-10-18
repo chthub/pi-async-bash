@@ -3,11 +3,11 @@
 ## Current status
 
 The GitHub repository is public and can be installed through Pi's Git source.
-**This project is not yet published to npm.** The unscoped name `pi-async-bash`
-is already owned by an unrelated publisher. Do not install that npm package
-expecting this repository's code.
+**The selected npm name is `@chthub/pi-async-bash`; its first publication is pending.**
+The unscoped name `pi-async-bash` is already owned by an unrelated publisher.
+Do not install that npm package expecting this repository's code.
 
-Publishing is deliberately disabled until an owned npm name and trusted publisher
+Publishing is deliberately disabled until npm-side permissions and a trusted publisher
 are configured. No npm credentials are stored in this repository or required for tests.
 
 ## CI
@@ -21,13 +21,13 @@ No pull-request code receives publishing credentials.
 
 ## One-time setup by an npm maintainer
 
-1. Choose a package name that you own. For example, `@YOUR_NPM_SCOPE/pi-async-bash`
-   requires ownership or publish permission for that npm scope; a GitHub username
-   alone does not grant npm ownership.
-2. Change `package.json`'s `name`, refresh `package-lock.json` with
-   `npm install --package-lock-only --ignore-scripts`, update installation instructions,
-   and commit/push the changes. The release guard explicitly blocks the occupied
-   unscoped name, even if an Actions variable mistakenly selects it.
+1. Log in to npm with an account that can publish under the `@chthub` scope.
+   This requires ownership or publish permission for that npm scope; a GitHub
+   username alone does not grant npm ownership. Use `npm login` and verify with
+   `npm whoami`; do not send credentials through chat.
+2. The manifest and lockfile already use `@chthub/pi-async-bash`. The release guard
+   explicitly blocks the occupied unscoped name, even if an Actions variable
+   mistakenly selects it.
 3. If this is a new npm package, bootstrap its first version from a trusted local
    checkout using your own npm login/2FA. Run `npm ci --ignore-scripts`, `npm test`,
    `npm run test:integration`, and `npm pack --dry-run` before `npm publish --access public`.
@@ -40,7 +40,7 @@ No pull-request code receives publishing credentials.
    - Enable permission for direct `npm publish` (stage-only permission is not enough).
 5. Create the GitHub deployment environment `npm`; add required-reviewer/tag
    restrictions where appropriate. Set repository Actions variable
-   `NPM_PACKAGE_NAME` to the exact npm name. Set `NPM_PUBLISH_ENABLED` to `true`
+   `NPM_PACKAGE_NAME` to `@chthub/pi-async-bash`. Set `NPM_PUBLISH_ENABLED` to `true`
    **only after** completing the package-name and trust configuration.
 
 The current npm trusted-publishing documentation requires a newly configured trust
