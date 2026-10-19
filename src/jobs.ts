@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { randomBytes } from "node:crypto";
 import type { AgentToolResult } from "@earendil-works/pi-agent-core";
 import type { AgentToolUpdateCallback, BashToolDetails } from "@earendil-works/pi-coding-agent";
 
@@ -44,8 +44,12 @@ export class JobPool {
   async run(options: RunOptions): Promise<{ result: NativeResult } | { job: Job }> {
     if (this.closed) throw new Error("Async bash is shutting down");
     const generation = this.generation;
+    let id: string;
+    do {
+      id = `bg-${randomBytes(4).toString("hex")}`;
+    } while (this.jobs.has(id));
     const job: Job = {
-      id: `bg-${randomUUID()}`,
+      id,
       toolCallId: options.toolCallId,
       command: options.command,
       startedAt: Date.now(),

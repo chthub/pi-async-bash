@@ -92,6 +92,8 @@ await tools.bash_jobs({ action: "status", job_id: "bg-..." });
 await tools.bash_jobs({ action: "cancel", job_id: "bg-..." });
 ```
 
+Job IDs use `bg-` plus eight random lowercase hexadecimal characters (for example, `bg-a3f81c92`). Collisions with IDs in the current registry are retried. IDs are runtime-local, not persistent handles.
+
 `action` must be `"list"`, `"status"`, or `"cancel"`. `job_id` is required for `status` and `cancel`. Codemode calls resolve to a string, not a structured object; use `text(...)` to display it.
 
 Status returns the latest **native bounded output snapshot**, state, and optional exit code. If Pi has spilled large output to a file, status includes `full_output_path`; use the normal `read` tool to inspect it. Short output may have no file. While a job is running, its native full-output file is still being written.
@@ -102,7 +104,7 @@ Job lists show at most the 20 most recently started jobs. The registry retains a
 
 ## TUI task widget
 
-A separate UI component appears **below the editor**, without replacing Pi's footer. It shows the active count and up to three task rows: abbreviated job ID, running/cancelling state, elapsed time, and a command preview. Additional jobs are summarized as `+N more`; use `bash_jobs` for full IDs and details.
+A separate UI component appears **below the editor**, without replacing Pi's footer. It shows the active count and up to three task rows: complete short job ID, running/cancelling state, elapsed time, and a command preview. Additional jobs are summarized as `+N more`; use `bash_jobs` for the full list and details.
 
 The display refreshes once per second while jobs are active, disappears when none remain, and cleans up its timer on shutdown/reload. It handles narrow terminals, wide characters, and theme changes using Pi's own TUI utilities. Only the command preview is sanitized and shortened for display; execution and model-facing output are untouched.
 

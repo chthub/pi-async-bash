@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import crypto from "node:crypto";
+import { syncBuiltinESMExports } from "node:module";
 import { setImmediate as immediate, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { JobPool } from "../src/jobs.ts";
@@ -52,6 +54,38 @@ async function settled(job) {
 
 // These scheduler tests deliberately use small, controllable promises. The other
 // test file exercises the actual public Pi bash factory; no private API is copied.
+test("job IDs are short lowercase hex and remain usable for lookup and cancellation", async (t) => {
+  const { pool, run } = setup(t);
+  const { job } = await run(controlled().execute, { background: true });
+  assert.match(job.id, /^bg-[0-9a-f]{8}$/);
+  assert.strictEqual(pool.get(job.id), job);
+  assert.strictEqual(pool.cancel(job.id), job);
+  await settled(job);
+  assert.equal(job.state, "cancelled");
+});
+
+test("ID collisions retry without replacing running or retained completed jobs", async (t) => {
+  const ids = ["12345678", "12345678", "abcdef01", "abcdef01", "12345678", "00000000"];
+  let calls = 0;
+  const random = t.mock.method(crypto, "randomBytes", (size) => {
+    assert.equal(size, 4);
+    assert.ok(calls < ids.length, "unexpected extra ID generation");
+    return Buffer.from(ids[calls++], "hex");
+  });
+  syncBuiltinESMExports();
+  t.after(() => { random.mock.restore(); syncBuiltinESMExports(); });
+  const { pool, run } = setup(t);
+  const first = await run(controlled().execute, { background: true });
+  const second = await run(async () => result(), { background: true });
+  await settled(second.job);
+  const third = await run(controlled().execute, { background: true });
+  assert.deepEqual([first.job.id, second.job.id, third.job.id], [
+    "bg-12345678", "bg-abcdef01", "bg-00000000",
+  ]);
+  assert.equal(calls, ids.length);
+  for (const { job } of [first, second, third]) assert.strictEqual(pool.get(job.id), job);
+});
+
 test("foreground preserves the exact native result object and is not retained", async (t) => {
   const { pool, notifications, run } = setup(t);
   const native = result(" \n", { structuredContent: { output: " \n", exit_code: 0 } });

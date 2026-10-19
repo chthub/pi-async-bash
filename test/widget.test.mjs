@@ -10,7 +10,7 @@ import { attachJobWidget, renderJobRows } from "../src/widget.ts";
 
 const plainTheme = { fg: (_token, text) => text };
 const now = 1_000_000;
-const job = (overrides = {}) => ({ id: "bg-12345678-1234", command: "printf widget-fixture", startedAt: now - 1500, state: "running", ...overrides });
+const job = (overrides = {}) => ({ id: "bg-12345678", command: "printf widget-fixture", startedAt: now - 1500, state: "running", ...overrides });
 const plain = (lines) => lines.map(stripTerminalSequences);
 
 // Only the widget's interval is substituted. No global Date/setTimeout mocking,
@@ -104,6 +104,7 @@ test("widget respects terminal columns at narrow widths with CJK, combining mark
     }
   }
   const wide = plain(renderJobRows(jobs, 160, themed, now));
+  assert.ok(wide[1].startsWith(`${jobs[0].id} running `), "widget must show the complete usable job ID");
   assert.ok(wide[1].includes(command), "an untruncated preview must preserve composed emoji and combining text");
 });
 
