@@ -10,7 +10,7 @@ Pi runs the command. This extension only decides when to stop waiting and how to
 
 - `bash({ command, background: true })` returns a job ID immediately.
 - Normal bash calls automatically move to the background after 60 seconds.
-- Completed background jobs send an `async_bash_result` steering message. Pi delivers it at a tool-batch boundary, or wakes the agent when idle.
+- Completed background jobs send an `async_bash_result` steering message. Pi delivers it at a tool-batch boundary, or wakes the agent when idle. In the TUI, long results use Pi's native bash preview; expand/collapse with `Ctrl+O` (or your configured tool-expansion shortcut), or click in fullscreen mode.
 - If Escape clears a completion notice, it is resent after the interrupted run stops. This can wake the agent again without a new user prompt.
 - `bash_jobs` lists, inspects, or cancels jobs in the current runtime.
 - In interactive TUI mode, a read-only widget below the editor shows active background jobs, elapsed time, and cancellation status.

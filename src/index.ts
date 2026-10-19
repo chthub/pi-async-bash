@@ -1,5 +1,6 @@
 import { createBashToolDefinition, type ExtensionAPI } from "@earendil-works/pi-coding-agent";
 import { Type } from "typebox";
+import { createCompletionRenderer } from "./completion-renderer.ts";
 import { JobPool, type Job } from "./jobs.ts";
 import { attachJobWidget } from "./widget.ts";
 
@@ -28,6 +29,7 @@ function summary(job: Job) {
 export default function asyncBash(pi: ExtensionAPI) {
   const native = createBashToolDefinition(process.cwd());
   if (!native.outputSchema) throw new Error("pi-async-bash requires Pi with native structured bash output (tested on 1.3.0)");
+  pi.registerMessageRenderer("async_bash_result", createCompletionRenderer(native));
   const pool = new JobPool((job) => {
     pi.sendMessage({
       customType: "async_bash_result",
@@ -36,7 +38,7 @@ export default function asyncBash(pi: ExtensionAPI) {
         ...job.snapshot.content,
       ],
       display: true,
-      details: summary(job),
+      details: { ...summary(job), nativeDetails: job.snapshot.details },
     }, { deliverAs: "steer", triggerTurn: true });
   });
 

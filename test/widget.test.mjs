@@ -252,6 +252,7 @@ async function extensionFixture(t, mode = "tui") {
   const ctx = { mode, cwd, ui: f.ui, sessionManager: { getSessionId: () => "widget-session", getSessionFile: () => undefined } };
   const api = {
     registerTool(tool) { tools.set(tool.name, tool); },
+    registerMessageRenderer() {},
     registerFlag() {},
     getFlag() { return "0"; },
     getSettings() { return {}; },

@@ -16,6 +16,7 @@ const digest = (value) => ({ bytes: Buffer.byteLength(value), sha256: createHash
 async function fixture(t, { after = "0", settings = {} } = {}) {
   const cwd = await mkdtemp(join(tmpdir(), "pi-async-bash-test-"));
   const tools = new Map();
+  const renderers = new Map();
   const handlers = new Map();
   const flags = new Map([["bash-background-after", after]]);
   const messages = [];
@@ -36,6 +37,7 @@ async function fixture(t, { after = "0", settings = {} } = {}) {
   };
   const api = {
     registerTool(tool) { tools.set(tool.name, tool); },
+    registerMessageRenderer(type, renderer) { renderers.set(type, renderer); },
     registerFlag(name, definition) { if (!flags.has(name)) flags.set(name, definition.default); },
     getFlag(name) { return flags.get(name); },
     getSettings() { return { ...settings }; },
@@ -92,7 +94,7 @@ async function fixture(t, { after = "0", settings = {} } = {}) {
   };
   const jobs = async (action, job_id) => tools.get("bash_jobs").execute("inspect", { action, job_id }, undefined, undefined, ctx);
   const status = async (job_id) => JSON.parse((await jobs("status", job_id)).content[0].text);
-  return { tools, flags, settings, ctx, messages, timeline, emit, invoke, acknowledge, native, jobs, status };
+  return { tools, renderers, flags, settings, ctx, messages, timeline, emit, invoke, acknowledge, native, jobs, status };
 }
 
 async function until(predicate, message, timeout = 5000) {
@@ -344,6 +346,7 @@ test("public schemas keep native foreground output and require job IDs for statu
   assert.ok(bash.outputSchema.anyOf.some((schema) => schema.properties?.status?.const === "running"));
   assert.equal(typeof bash.renderCall, "function");
   assert.equal(typeof bash.renderResult, "function");
+  assert.equal(typeof f.renderers.get("async_bash_result"), "function");
   assert.match(f.tools.get("bash_jobs").promptSnippet, /List, inspect, or cancel/);
   assert.equal(f.tools.get("bash_jobs").parameters.type, "object");
   assert.equal(f.tools.get("bash_jobs").parameters.anyOf, undefined);
@@ -419,6 +422,9 @@ test("native line truncation and background nonzero status retain the official l
   const status = await f.status(jobId);
   assert.equal(status.state, "failed");
   assert.equal(status.exit_code, 23);
+  const completion = f.messages[0].message;
+  assert.equal(completion.details.nativeDetails.fullOutputPath, status.full_output_path);
+  assert.equal(completion.details.nativeDetails.truncation.truncated, true);
   assert.equal((await readFile(status.full_output_path, "utf8")).split("\n").length, 2501);
   const details = await f.jobs("status", jobId);
   assert.match(textOf(details), /Command exited with code 23/);
