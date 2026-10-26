@@ -160,8 +160,10 @@ export class JobPool {
   /** Observe the public turn boundary, after earlier steering has been consumed.
    * Clear-queue/Escape can discard a queued custom message. Record missing items
    * while aborting; the settled handler retries them after that run has stopped.
+   * Pi's snapshot shows only the queue head in one-at-a-time mode, so absence is
+   * evidence of loss only when the snapshot is empty.
    */
-  reconcileNotifications(pendingIds: ReadonlySet<string>, retry: boolean): void {
+  reconcileNotifications(pendingIds: ReadonlySet<string>, retry: boolean, queueEmpty = pendingIds.size === 0): void {
     if (this.closed) return;
     for (const job of this.jobs.values()) {
       // Pi awaits custom start/end before the request and this turn boundary.
@@ -169,7 +171,7 @@ export class JobPool {
       // depending on message_end metadata or pairing possibly interleaved events.
       if (job.delivery === "consumed") job.delivery = "delivered";
       if (!job.background || !job.acknowledged || !job.endedAt || job.delivery === "delivered") continue;
-      if (job.delivery === "queued" && !pendingIds.has(job.id)) job.delivery = "pending";
+      if (job.delivery === "queued" && queueEmpty) job.delivery = "pending";
       if (retry && job.delivery === "pending" && !pendingIds.has(job.id)) this.enqueue(job);
     }
     this.prune();

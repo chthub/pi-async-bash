@@ -19,7 +19,7 @@ const jsonl = (value) => value.trim().split("\n").filter(Boolean).map((line) => 
 const isCompletion = (message) => ["async_bash_result", "fixture_transformed_result"].includes(message?.customType);
 const RUN_PROMPT = "Run the local integration script.";
 
-async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false, expectAbort = false, completionTransform, repeatUserStep = false } = {}) {
+async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false, expectAbort = false, completionTransform, repeatUserStep = false, steeringMode } = {}) {
   assert.equal(manifest.version, "1.3.0", "Integration contract requires installed Pi 1.3.0");
   const dir = await mkdtemp(join(tmpdir(), "pi-async-bash-integration-"));
   let child;
@@ -38,6 +38,7 @@ async function launch(t, steps, { after = "0", codemode = false, dynamicTool = f
   }));
   await writeFile(join(dir, "agent", "settings.json"), JSON.stringify({
     compaction: { enabled: false }, retry: { enabled: false },
+    ...(steeringMode ? { steeringMode } : {}),
   }));
   const args = [cli, "--mode", "rpc", "--offline", "--no-extensions", "--no-skills",
     "--no-prompt-templates", "--no-themes", "--no-context-files", "--no-mcp", "--no-approve",
@@ -249,6 +250,33 @@ test("real Pi: bash_jobs list/status/cancel cancels the native process", { timeo
   assert.ok(Number.isInteger(pid) && pid > 1);
   assert.throws(() => process.kill(pid, 0), { code: "ESRCH" }, "native shell was terminated");
 });
+
+// Several results finish behind one foreground command and wait in Pi's steering
+// queue together. In one-at-a-time mode turn_end exposes only the queue head.
+for (const steeringMode of ["one-at-a-time", "all"]) {
+  test(`real Pi: completions queued together are each delivered once (${steeringMode})`, { timeout: 45000 }, async (t) => {
+    const names = ["alpha", "beta", "gamma"];
+    const pi = await launch(t, [
+      ...names.map((name) => ({ tool: "bash", args: {
+        command: `while [ ! -f release ]; do sleep 0.01; done; printf '${name}\\n' >> executions.txt; printf ${name}-complete`,
+        background: true,
+      } })),
+      { tool: "bash", args: { command: `touch release; while [ "$(wc -l < executions.txt 2>/dev/null)" != ${names.length} ]; do sleep 0.01; done; sleep 0.2`, timeout: 10 } },
+    ], { steeringMode });
+    await pi.run();
+    const saved = await pi.finish(names.length);
+    await delay(300);
+    assert.equal(pi.events.filter((event) => event.type === "message_end" && isCompletion(event.message)).length, names.length,
+      "no completion may be replayed while others are still queued");
+    const final = await pi.snapshot();
+    assert.equal(final.completions.length, names.length);
+    assert.equal(new Set(final.completions.map((message) => message.details.job_id)).size, names.length);
+    assert.deepEqual(names.map((name) => final.completions.some((message) => text(message).includes(`${name}-complete`))),
+      names.map(() => true));
+    assert.equal(saved.completions.length, names.length);
+    assert.equal((await readFile(join(pi.dir, "work", "executions.txt"), "utf8")).split("\n").filter(Boolean).length, names.length);
+  });
+}
 
 test("real Pi: RPC stdin EOF cancels a live job without a shutdown notification", { timeout: 45000 }, async (t) => {
   const pi = await launch(t, [

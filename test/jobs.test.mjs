@@ -310,6 +310,28 @@ test("enqueue is not delivery; a cleared notification is resent once after abort
   assert.equal(notifications.length, 2, "confirmed results are never replayed");
 });
 
+test("results hidden behind a one-at-a-time queue head are not resent", async (t) => {
+  const { pool, notifications, run } = setup(t, { confirm: false });
+  const jobs = [];
+  for (let i = 0; i < 3; i++) {
+    const { job } = await run(async () => result(), { background: true });
+    pool.acknowledge(job.toolCallId);
+    await settled(job);
+    jobs.push(job);
+  }
+  await immediate();
+  assert.equal(notifications.length, 3);
+  for (const [index, job] of jobs.entries()) {
+    // Pi's turn_end snapshot shows only the next queued message.
+    pool.reconcileNotifications(new Set([job.id]), true, false);
+    assert.equal(notifications.length, 3, `turn ${index + 1} must not replay messages still behind the head`);
+    pool.observeDelivery(job.id);
+  }
+  pool.reconcileNotifications(new Set(), true);
+  assert.ok(jobs.every((job) => job.delivery === "delivered"));
+  assert.equal(notifications.length, 3);
+});
+
 test("undelivered completions are not pruned even after more than twenty jobs finish", async (t) => {
   const { pool, run } = setup(t, { confirm: false });
   const ids = [];

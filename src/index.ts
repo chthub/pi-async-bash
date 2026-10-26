@@ -145,8 +145,9 @@ export default function asyncBash(pi: ExtensionAPI) {
     if (id) pool.observeDelivery(id);
   });
   pi.on("turn_end", (event, ctx) => {
-    const pending = new Set(event.context.pendingMessages.map(completionId).filter((id): id is string => id !== undefined));
-    pool.reconcileNotifications(pending, event.outcome === "completed" && !ctx.signal?.aborted);
+    const queued = event.context.pendingMessages;
+    const pending = new Set(queued.map(completionId).filter((id): id is string => id !== undefined));
+    pool.reconcileNotifications(pending, event.outcome === "completed" && !ctx.signal?.aborted, queued.length === 0);
   });
   pi.on("agent_settled", (event) => {
     if (event.aborted) pool.retryPendingNotifications();
