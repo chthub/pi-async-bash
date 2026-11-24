@@ -4,6 +4,7 @@ import { syncBuiltinESMExports } from "node:module";
 import { setImmediate as immediate, setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { JobPool } from "../src/jobs.ts";
+import { renderStatusText } from "../src/widget.ts";
 
 const result = (text = "done", extra = {}) => ({
   content: [{ type: "text", text }], details: undefined, ...extra,
@@ -428,4 +429,46 @@ test("shutdown suppresses recovery scheduled at aborted settlement", async (t) =
   await immediate();
   assert.equal(notifications.length, 1);
   assert.deepEqual(pool.list(), []);
+});
+
+test("change observer sees background work only, through completion and delivery", async (t) => {
+  const seen = [];
+  let pool;
+  pool = new JobPool((job) => {
+    pool.observeDelivery(job.id);
+    pool.reconcileNotifications(new Set(), false);
+  }, () => seen.push(renderStatusText(pool.list())));
+  t.after(() => pool.stop());
+  await pool.run({ toolCallId: "fg", command: "printf foreground", background: false, afterSeconds: 0,
+    execute: async () => result() });
+  assert.ok(seen.every((text) => text === undefined), "a foreground command is never reported");
+  const work = controlled();
+  const { job } = await pool.run({ toolCallId: "bg", command: "sleep 30", background: true, afterSeconds: 0, execute: work.execute });
+  assert.match(seen.at(-1), /1 running: bg-[0-9a-f]{8} sleep 30/);
+  work.resolve(result());
+  await settled(job);
+  assert.equal(seen.at(-1), "Background bash · 1 result pending delivery", "finished but unacknowledged result is still pending");
+  pool.acknowledge("bg");
+  for (let i = 0; i < 20 && seen.at(-1) !== undefined; i++) await immediate();
+  assert.equal(seen.at(-1), undefined, "cleared once the result reached the conversation");
+});
+
+test("change observer reports cancellation and is cleared by stop", async (t) => {
+  const seen = [];
+  const pool = new JobPool(() => {}, () => seen.push(renderStatusText(pool.list())));
+  const { job } = await pool.run({ toolCallId: "bg", command: "sleep 30", background: true, afterSeconds: 0,
+    execute: controlled().execute });
+  pool.cancel(job.id);
+  assert.match(seen.at(-1), /\(cancelling\) sleep 30/);
+  await pool.stop();
+  assert.equal(seen.at(-1), undefined);
+});
+
+test("a throwing change observer cannot break scheduling", async (t) => {
+  const pool = new JobPool(() => {}, () => { throw new Error("observer"); });
+  t.after(() => pool.stop());
+  const { job } = await pool.run({ toolCallId: "bg", command: "true", background: true, afterSeconds: 0,
+    execute: async () => result() });
+  await settled(job);
+  assert.equal(job.state, "completed");
 });

@@ -6,7 +6,7 @@ import { setTimeout as delay } from "node:timers/promises";
 import test from "node:test";
 import { stripTerminalSequences, visibleWidth } from "@earendil-works/pi-tui";
 import asyncBash from "../src/index.ts";
-import { attachJobWidget, renderJobRows } from "../src/widget.ts";
+import { attachJobStatus, attachJobWidget, renderJobRows, renderStatusText, STATUS_KEY } from "../src/widget.ts";
 
 const plainTheme = { fg: (_token, text) => text };
 const now = 1_000_000;
@@ -355,4 +355,58 @@ test("extension wiring never installs the task widget in RPC/JSON/print modes", 
       assert.equal(f.uiFixture.calls.length, 0);
     });
   }
+});
+
+test("status text lists running background commands and undelivered results, then clears", () => {
+  assert.equal(renderStatusText([]), undefined);
+  const done = (id, delivery) => job({ id, state: "completed", endedAt: now, delivery });
+  assert.equal(renderStatusText([done("bg-00000001", "delivered")]), undefined, "delivered results are not pending work");
+  const text = renderStatusText([
+    job({ id: "bg-aaaaaaaa", command: "npm test\n  --watch=false" }),
+    job({ id: "bg-bbbbbbbb", state: "cancelling", command: "sleep 30" }),
+    done("bg-cccccccc", "queued"),
+  ]);
+  assert.equal(text, "Background bash · 2 running: bg-aaaaaaaa npm test --watch=false | bg-bbbbbbbb (cancelling) sleep 30; 1 result pending delivery");
+  assert.equal(renderStatusText([done("bg-cccccccc", "pending"), done("bg-dddddddd", "consumed")]),
+    "Background bash · 2 results pending delivery");
+});
+
+test("status text caps rows and command previews and strips control sequences", () => {
+  const many = [1, 2, 3, 4, 5].map((n) => job({ id: `bg-0000000${n}`, command: `cmd${n}` }));
+  assert.match(renderStatusText(many), /5 running: .*cmd3 \| \+2 more$/);
+  const long = renderStatusText([job({ command: `\x1b[31m${"x".repeat(200)}\x1b[0m` })]);
+  assert.ok(!long.includes("\x1b"));
+  assert.ok(long.endsWith(`${"x".repeat(79)}…`));
+});
+
+test("status channel is RPC-only, deduplicated, and cleared once on detach", () => {
+  const forbidden = new Proxy({}, { get() { assert.fail("non-RPC code accessed ui"); } });
+  for (const mode of ["tui", "json", "print", undefined]) {
+    const status = attachJobStatus({ mode, ui: forbidden }, () => assert.fail("non-RPC code read jobs"));
+    status.update();
+    status.detach();
+  }
+  const calls = [];
+  let jobs = [];
+  const status = attachJobStatus({ mode: "rpc", ui: { setStatus: (...args) => calls.push(args) } }, () => jobs);
+  status.update();
+  assert.deepEqual(calls, [], "nothing to report and nothing previously reported");
+  jobs = [job()];
+  status.update();
+  status.update();
+  jobs = [job({ state: "completed", endedAt: now, delivery: "delivered" })];
+  status.update();
+  status.detach();
+  status.detach();
+  jobs = [job()];
+  status.update();
+  assert.deepEqual(calls, [
+    [STATUS_KEY, "Background bash · 1 running: bg-12345678 printf widget-fixture"],
+    [STATUS_KEY, undefined],
+  ]);
+});
+
+test("status channel failures never escape into scheduling", () => {
+  const status = attachJobStatus({ mode: "rpc", ui: { setStatus() { throw new Error("closed pipe"); } } }, () => [job()]);
+  assert.doesNotThrow(() => { status.update(); status.detach(); });
 });

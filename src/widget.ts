@@ -8,10 +8,13 @@ export type PendingJobView = Readonly<{
   startedAt: number;
   state: string;
   endedAt?: number;
+  delivery?: string;
 }>;
 
 const WIDGET_KEY = "async-bash-jobs";
+export const STATUS_KEY = "async-bash";
 const MAX_ROWS = 3;
+const STATUS_PREVIEW = 80;
 
 function elapsed(startedAt: number, now: number): string {
   const seconds = Math.max(0, Math.floor((now - startedAt) / 1000));
@@ -26,8 +29,32 @@ function commandPreview(command: string): string {
     .replace(/[\x00-\x1f\x7f-\x9f\u202a-\u202e\u2066-\u2069]/g, "").trim();
 }
 
+const isActive = (job: PendingJobView) =>
+  job.endedAt === undefined && (job.state === "running" || job.state === "cancelling");
+
+/** One-line status for RPC hosts. Undefined means no background work remains:
+ * nothing running and every finished job's result has reached the conversation.
+ */
+export function renderStatusText(jobs: readonly PendingJobView[]): string | undefined {
+  const active = jobs.filter(isActive);
+  const undelivered = jobs.filter((job) => job.endedAt !== undefined && job.delivery !== "delivered").length;
+  if (active.length === 0 && undelivered === 0) return undefined;
+  const parts: string[] = [];
+  if (active.length > 0) {
+    const shown = active.slice(0, MAX_ROWS).map((job) => {
+      let preview = commandPreview(job.command);
+      if (preview.length > STATUS_PREVIEW) preview = `${preview.slice(0, STATUS_PREVIEW - 1)}…`;
+      return `${job.id}${job.state === "cancelling" ? " (cancelling)" : ""} ${preview}`;
+    });
+    if (active.length > MAX_ROWS) shown.push(`+${active.length - MAX_ROWS} more`);
+    parts.push(`${active.length} running: ${shown.join(" | ")}`);
+  }
+  if (undelivered > 0) parts.push(`${undelivered} result${undelivered === 1 ? "" : "s"} pending delivery`);
+  return `Background bash · ${parts.join("; ")}`;
+}
+
 export function renderJobRows(jobs: readonly PendingJobView[], width: number, theme: Pick<Theme, "fg">, now = Date.now()): string[] {
-  const pending = jobs.filter((job) => job.endedAt === undefined && (job.state === "running" || job.state === "cancelling"));
+  const pending = jobs.filter(isActive);
   if (width < 1 || pending.length === 0) return [];
   const fit = (value: string) => truncateToWidth(value, width, "…");
   const lines = [fit(theme.fg("muted", `Background bash · ${pending.length} active`))];
@@ -71,6 +98,29 @@ class JobsComponent implements Component {
   dispose(): void {
     clearInterval(this.timer);
   }
+}
+
+/** RPC only: report background jobs through the fire-and-forget status channel,
+ * so a host can show them and tell whether Pi still has work that will wake it.
+ * TUI uses the widget instead; JSON and print modes have no UI channel.
+ */
+export function attachJobStatus(ctx: Pick<ExtensionContext, "mode" | "ui">, readJobs: () => readonly PendingJobView[]): { update(): void; detach(): void } {
+  if (ctx.mode !== "rpc") return { update() {}, detach() {} };
+  let last: string | undefined;
+  let detached = false;
+  const publish = (text: string | undefined) => {
+    if (text === last) return;
+    last = text;
+    try { ctx.ui.setStatus(STATUS_KEY, text); } catch { /* status is advisory */ }
+  };
+  return {
+    update() { if (!detached) publish(renderStatusText(readJobs())); },
+    detach() {
+      if (detached) return;
+      publish(undefined);
+      detached = true;
+    },
+  };
 }
 
 /** No widgets or timers in RPC, JSON, or print mode. Does not replace the footer. */

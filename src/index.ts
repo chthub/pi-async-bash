@@ -2,7 +2,7 @@ import { createBashToolDefinition, type ExtensionAPI } from "@earendil-works/pi-
 import { Type } from "typebox";
 import { createCompletionRenderer } from "./completion-renderer.ts";
 import { JobPool, type Job } from "./jobs.ts";
-import { attachJobWidget } from "./widget.ts";
+import { attachJobStatus, attachJobWidget } from "./widget.ts";
 
 const DEFAULT_AFTER_SECONDS = 60;
 const MAX_AFTER_SECONDS = 2_147_483_647 / 1000;
@@ -28,7 +28,7 @@ function summary(job: Job) {
 
 export default function asyncBash(pi: ExtensionAPI) {
   const native = createBashToolDefinition(process.cwd());
-  if (!native.outputSchema) throw new Error("pi-async-bash requires Pi with native structured bash output (tested on 1.3.0)");
+  if (!native.outputSchema) throw new Error("pi-async-bash requires Pi with native structured bash output (tested on 1.3.0 and 1.6.0)");
   pi.registerMessageRenderer("async_bash_result", createCompletionRenderer(native));
   const pool = new JobPool((job) => {
     pi.sendMessage({
@@ -40,9 +40,10 @@ export default function asyncBash(pi: ExtensionAPI) {
       display: true,
       details: { ...summary(job), nativeDetails: job.snapshot.details },
     }, { deliverAs: "steer", triggerTurn: true });
-  });
+  }, () => status.update());
 
   let detachWidget = () => {};
+  let status: { update(): void; detach(): void } = { update() {}, detach() {} };
 
   pi.registerFlag("bash-background-after", {
     description: "Automatically background bash after this many seconds (default 60; 0 disables automatic backgrounding)",
@@ -157,10 +158,16 @@ export default function asyncBash(pi: ExtensionAPI) {
     pool.start();
     detachWidget();
     detachWidget = attachJobWidget(ctx, () => pool.list());
+    status.detach();
+    status = attachJobStatus(ctx, () => pool.list());
+    status.update();
   });
   pi.on("session_shutdown", async () => {
     try { detachWidget(); }
-    finally { await pool.stop(); }
+    finally {
+      try { await pool.stop(); }
+      finally { status.detach(); }
+    }
   });
   // Fail closed before navigation/summarization can send work to another branch.
   // Even a navigation attempt vetoed by another extension cancels existing jobs.

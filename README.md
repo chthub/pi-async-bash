@@ -2,7 +2,7 @@
 
 [![CI](https://github.com/chthub/pi-async-bash/actions/workflows/ci.yml/badge.svg)](https://github.com/chthub/pi-async-bash/actions/workflows/ci.yml)
 
-A thin background-job wrapper around **Pi's own bash tool**. Tested with Pi 1.3.0 and Node.js 22.19+.
+A thin background-job wrapper around **Pi's own bash tool**. Tested with Pi 1.3.0 through 1.6.0 and Node.js 22.19+.
 
 Pi runs the command. This extension only decides when to stop waiting and how to report its eventual result.
 
@@ -14,6 +14,7 @@ Pi runs the command. This extension only decides when to stop waiting and how to
 - If Escape clears a completion notice, it is resent after the interrupted run stops. This can wake the agent again without a new user prompt.
 - `bash_jobs` lists, inspects, or cancels jobs in the current runtime.
 - In interactive TUI mode, a read-only widget below the editor shows active background jobs, elapsed time, and cancellation status.
+- In RPC mode, the `async-bash` status (`setStatus`) lists running background commands and results not yet delivered, and is cleared when none remain. Foreground bash never appears there.
 
 ## What stays native
 
@@ -110,6 +111,21 @@ The display refreshes once per second while jobs are active, disappears when non
 
 This is a read-only view of the job registry. It neither controls execution nor sends model messages. RPC, JSON, and print modes create no widget or UI timer.
 
+## RPC status
+
+RPC mode has no widget. Instead the extension sets one status through Pi's fire-and-forget UI channel, which reaches the client as an `extension_ui_request` event:
+
+```json
+{"type":"extension_ui_request","method":"setStatus","statusKey":"async-bash","statusText":"Background bash · 1 running: bg-a3f81c92 npm test; 1 result pending delivery"}
+```
+
+- Only background jobs are listed: explicit `background: true` and commands moved to the background after the threshold. Foreground bash is never reported.
+- At most three commands are shown, each preview cut to 80 characters with control sequences removed, then `+N more`.
+- A finished job counts as pending until its `async_bash_result` has been consumed at a turn boundary.
+- The status is cleared (`statusText` absent) when nothing is running and every result has been delivered, and on shutdown, reload, or navigation.
+
+A host that decides when to close Pi (for example by closing stdin after `agent_settled`) can keep Pi alive while this status is set: the completion will wake the agent through `triggerTurn`. `agent_settled` alone does not account for background jobs. Updates are sent only when the text changes; there is no elapsed-time ticker.
+
 ## Lifetime and deliberate limits
 
 - Jobs are owned by one live extension runtime. Shutdown, reload, session replacement, and branch navigation cancel running jobs and discard the registry. This is not a daemon or a scheduler for jobs that must survive Pi exiting.
@@ -128,9 +144,10 @@ This is a read-only view of the job registry. It neither controls execution nor 
 npm ci --ignore-scripts
 npm test
 npm run test:integration
+npm run test:pi -- latest   # another Pi release, in a temporary copy
 ```
 
-Only documented/public Pi APIs are imported. Host libraries are peer dependencies; development pins Pi 1.3.0 for reproducible compatibility tests. Tests use temporary fixtures and do not require real model credentials.
+Only documented/public Pi APIs are imported. Host libraries are peer dependencies; development pins Pi 1.6.0 for reproducible tests. `npm run test:pi -- <version|latest>` runs the full suite against another Pi release in a temporary copy (CI also runs it for the oldest supported release, 1.3.0). Tests use temporary fixtures and do not require real model credentials.
 
 ## CI and publishing
 

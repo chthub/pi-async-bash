@@ -18,9 +18,11 @@ const jsonl = (value) => value.trim().split("\n").filter(Boolean).map((line) => 
 // Include the fixture's legal replacement customType when counting actual delivery.
 const isCompletion = (message) => ["async_bash_result", "fixture_transformed_result"].includes(message?.customType);
 const RUN_PROMPT = "Run the local integration script.";
+// The devDependency pin is the version under test; scripts/test-pi-version.sh rewrites it.
+const pinnedPi = JSON.parse(await readFile(join(root, "package.json"), "utf8")).devDependencies["@earendil-works/pi-coding-agent"];
 
 async function launch(t, steps, { after = "0", codemode = false, dynamicTool = false, expectAbort = false, completionTransform, repeatUserStep = false, steeringMode } = {}) {
-  assert.equal(manifest.version, "1.3.0", "Integration contract requires installed Pi 1.3.0");
+  assert.equal(manifest.version, pinnedPi, `Integration contract requires installed Pi ${pinnedPi}; run npm ci, or npm run test:pi -- <version> for other releases`);
   const dir = await mkdtemp(join(tmpdir(), "pi-async-bash-integration-"));
   let child;
   let closed;
@@ -494,4 +496,23 @@ test("real Pi: late tool registration coexists with completion and append-only h
   assert.equal(saved.requests[0].tools.includes("late_probe"), false);
   assert.ok(saved.requests.slice(1).some((request) => request.tools.includes("late_probe")));
   assert.ok(saved.messages.some((message) => message.toolName === "late_probe" && text(message) === "late-tool-ok"));
+});
+
+test("real Pi: RPC status reports only background bash and clears after delivery", { timeout: 45000 }, async (t) => {
+  const pi = await launch(t, [
+    { tool: "bash", args: { command: "printf foreground-only" } },
+    { tool: "bash", args: { command: "sleep 0.3; printf status-complete", background: true } },
+  ]);
+  await pi.run();
+  await pi.finish();
+  const statuses = pi.events.filter((event) => event.type === "extension_ui_request" &&
+    event.method === "setStatus" && event.statusKey === "async-bash");
+  assert.ok(statuses.length >= 2, `expected set and clear, got ${JSON.stringify(statuses)}`);
+  assert.match(statuses[0].statusText, /^Background bash · 1 running: bg-[0-9a-f]{8} sleep 0\.3; printf status-complete$/);
+  assert.equal(statuses.at(-1).statusText, undefined, "cleared once the completion reached the conversation");
+  assert.equal(statuses.some((event) => /foreground-only/.test(event.statusText ?? "")), false,
+    "foreground bash never appears");
+  const cleared = pi.events.indexOf(statuses.at(-1));
+  const delivered = pi.events.findIndex((event) => event.type === "message_start" && isCompletion(event.message));
+  assert.ok(delivered !== -1 && cleared > delivered, "status stays set until the result is consumed");
 });

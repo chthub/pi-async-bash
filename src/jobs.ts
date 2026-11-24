@@ -36,9 +36,20 @@ export class JobPool {
   private closed = false;
   private generation = 0;
   private notify: (job: Job) => void;
+  private onChange?: () => void;
 
-  constructor(notify: (job: Job) => void) {
+  /** onChange fires after any background job state or delivery change; observers must dedupe. */
+  constructor(notify: (job: Job) => void, onChange?: () => void) {
     this.notify = notify;
+    this.onChange = onChange;
+  }
+
+  private changed(): void {
+    try {
+      this.onChange?.();
+    } catch {
+      // Status reporting must never affect scheduling or delivery.
+    }
   }
 
   async run(options: RunOptions): Promise<{ result: NativeResult } | { job: Job }> {
@@ -90,12 +101,16 @@ export class JobPool {
       this.inFlight.delete(done);
       this.deliver(job, generation);
       this.prune();
+      this.changed();
       return outcome;
     });
     this.inFlight.add(done);
 
     try {
-      if (options.background && !job.controller.signal.aborted) return { job };
+      if (options.background && !job.controller.signal.aborted) {
+        this.changed();
+        return { job };
+      }
       let outcome = options.afterSeconds > 0 && !job.controller.signal.aborted
         ? await Promise.race([
           done,
@@ -109,6 +124,7 @@ export class JobPool {
       if (outcome === undefined) {
         job.background = true;
         options.signal?.removeEventListener("abort", forwardAbort);
+        this.changed();
         return { job };
       }
       this.jobs.delete(job.id);
@@ -155,6 +171,7 @@ export class JobPool {
     const job = this.jobs.get(id);
     if (!job?.background || !job.endedAt || job.delivery === "delivered") return;
     job.delivery = "consumed";
+    this.changed();
   }
 
   /** Observe the public turn boundary, after earlier steering has been consumed.
@@ -175,6 +192,7 @@ export class JobPool {
       if (retry && job.delivery === "pending" && !pendingIds.has(job.id)) this.enqueue(job);
     }
     this.prune();
+    this.changed();
   }
 
   /** Retry only missing notifications, once the aborted run has fully stopped.
@@ -201,6 +219,7 @@ export class JobPool {
     if (!job.endedAt) {
       job.state = "cancelling";
       job.controller.abort();
+      this.changed();
     }
     return job;
   }
@@ -217,6 +236,7 @@ export class JobPool {
     for (const job of this.jobs.values()) if (!job.endedAt) job.controller.abort();
     await Promise.all([...this.inFlight]);
     this.jobs.clear();
+    this.changed();
   }
 
   start(): void {

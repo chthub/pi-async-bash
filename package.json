@@ -39,7 +39,8 @@
   "scripts": {
     "typecheck": "tsc --noEmit",
     "test": "npm run typecheck && node --experimental-strip-types --test test/*.test.mjs",
-    "test:integration": "node --experimental-strip-types --test test/rpc.integration.mjs"
+    "test:integration": "node --experimental-strip-types --test test/rpc.integration.mjs",
+    "test:pi": "scripts/test-pi-version.sh"
   },
   "peerDependencies": {
     "@earendil-works/pi-coding-agent": "*",
@@ -48,10 +49,10 @@
     "typebox": "*"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.3.0",
-    "@earendil-works/pi-coding-agent": "1.3.0",
-    "@earendil-works/pi-agent-core": "1.3.0",
-    "@earendil-works/pi-tui": "1.3.0",
+    "@earendil-works/pi-ai": "1.6.0",
+    "@earendil-works/pi-coding-agent": "1.6.0",
+    "@earendil-works/pi-agent-core": "1.6.0",
+    "@earendil-works/pi-tui": "1.6.0",
     "@types/node": "^22.19.0",
     "typescript": "^5.9.3",
     "typebox": "1.3.27"

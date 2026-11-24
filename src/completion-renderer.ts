@@ -39,6 +39,8 @@ export function createCompletionRenderer(native: ReturnType<typeof createBashToo
       box.addChild(new Text(theme.fg("customMessageLabel", theme.bold(label)), 0, 0));
       if (details?.command) box.addChild(new Text(theme.fg("toolTitle", `$ ${details.command}`), 0, 0));
       box.addChild(renderResult(result, { expanded: state.expanded, isPartial: false }, theme, {
+        // Pi 1.6+ adds keybinding hints to both option types; pass the host's through.
+        ...options,
         args: { command: details?.command ?? "" },
         toolCallId: details?.job_id ?? "async_bash_result",
         invalidate: rebuild,
